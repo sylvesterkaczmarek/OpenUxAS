@@ -1,0 +1,36 @@
+name: Validate minimum-time path fix
+
+on:
+  push:
+    branches:
+      - audit/minimum-time-path-lengthening-units
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        env:
+          - {os: ubuntu-22.04, python: '3.10'}
+          - {os: ubuntu-24.04, python: '3.12'}
+        qualifier: [scenario=release, scenario=gcov]
+    runs-on: ${{ matrix.env.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.env.python }}
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: '11'
+          distribution: adopt
+      - name: Install infrastructure
+        run: infrastructure/install -vv --no-gnat --no-java -y
+      - name: Build OpenUxAS C++
+        run: ./anod -v build uxas --qualifier=${{ matrix.qualifier }}
+      - name: Test OpenUxAS C++
+        run: |
+          cd tests/cpp
+          ./run-tests --qualifier=${{ matrix.qualifier }}
