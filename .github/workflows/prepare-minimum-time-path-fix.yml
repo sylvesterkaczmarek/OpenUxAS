@@ -1,0 +1,85 @@
+name: Prepare minimum-time path fix
+
+on:
+  push:
+    branches:
+      - fix/minimum-time-path-lengthening-units
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply minimum-time path-lengthening fix
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          cpp = Path('src/cpp/Plans/Trajectory.cpp')
+          hdr = Path('src/cpp/Plans/Trajectory.h')
+          cpp_text = cpp.read_text()
+          hdr_text = hdr.read_text()
+
+          # Idempotent exit when the source commit triggers this workflow again.
+          if 'dMinTimeToLengthen_s' not in cpp_text and 'dMinimumPathLength_m' in cpp_text:
+              print('Source fix already applied.')
+              raise SystemExit(0)
+
+          replacements = [
+              (
+                  '            //TODO:: this needs to be in terms of time\n'
+                  '            double dMinTimeToLengthen_s = cTrajectoryParameters.dGetMinimumTime_s() - \n'
+                  '                                                    (dDistanceTotalMinimum_m*cTrajectoryParameters.dGetSpeed_mps());',
+                  '            const double dMinimumPathLength_m = cTrajectoryParameters.dGetMinimumTime_s()*\n'
+                  '                                                    cTrajectoryParameters.dGetSpeed_mps();'
+              ),
+              ('            if(dMinTimeToLengthen_s > 0.0)',
+               '            if(dDistanceTotalMinimum_m < dMinimumPathLength_m)'),
+              ('dLengthenPath(cTrajectoryParameters,dMinTimeToLengthen_s,assignMinimum)',
+               'dLengthenPath(cTrajectoryParameters,dMinimumPathLength_m,assignMinimum)'),
+              ('                                    double dMinTimeToLengthen_s,CAssignment& assignMinimum)',
+               '                                    double dMinimumPathLength_m,CAssignment& assignMinimum)'),
+              ('    double dDistanceLoiter = dMinTimeToLengthen_s - (dDistanceInitialLeg_m + dDistanceFinalLeg_m);',
+               '    double dDistanceLoiter = dMinimumPathLength_m - (dDistanceInitialLeg_m + dDistanceFinalLeg_m);'),
+          ]
+
+          for old, new in replacements:
+              count = cpp_text.count(old)
+              if count != 1:
+                  raise SystemExit(f'Expected one C++ match, found {count}: {old!r}')
+              cpp_text = cpp_text.replace(old, new, 1)
+
+          old_hdr = '                            double dMinTimeToLengthen_s,CAssignment& assignMinimum);'
+          new_hdr = '                            double dMinimumPathLength_m,CAssignment& assignMinimum);'
+          count = hdr_text.count(old_hdr)
+          if count != 1:
+              raise SystemExit(f'Expected one header match, found {count}')
+          hdr_text = hdr_text.replace(old_hdr, new_hdr, 1)
+
+          # Regression invariants for this defect.
+          assert 'dMinimumTime_s() -' not in cpp_text
+          assert 'dDistanceTotalMinimum_m*cTrajectoryParameters.dGetSpeed_mps()' not in cpp_text
+          assert cpp_text.count('dMinimumPathLength_m') == 5
+          assert hdr_text.count('dMinimumPathLength_m') == 1
+
+          cpp.write_text(cpp_text)
+          hdr.write_text(hdr_text)
+          PY
+
+      - name: Commit source fix
+        run: |
+          if git diff --quiet -- src/cpp/Plans/Trajectory.cpp src/cpp/Plans/Trajectory.h; then
+            echo 'No source changes to commit.'
+            exit 0
+          fi
+          git config user.name 'Sylvester Kaczmarek'
+          git config user.email '16242628+sylvesterkaczmarek@users.noreply.github.com'
+          git add src/cpp/Plans/Trajectory.cpp src/cpp/Plans/Trajectory.h
+          git commit -m 'fix(trajectory): correct minimum-time path lengthening units'
+          git push
